@@ -30,6 +30,8 @@
  *       button/
  *         button.tsx
  *         button.module.css
+ *         button.stories.tsx   ← excluded automatically
+ *         button.test.tsx      ← excluded automatically
  *     hooks/
  *       use-debounce/
  *         use-debounce.ts
@@ -68,12 +70,31 @@ const ENTITY_CATEGORIES: Record<
   styles:     { itemType: "registry:component",  fileType: "registry:style",      targetDir: "styles" },
 };
 
+/**
+ * Path aliases that resolve to local files in your project.
+ * Imports starting with these prefixes are skipped during dependency extraction.
+ */
 const LOCAL_ALIASES = ["@/", "~/", "#"];
 
+/**
+ * Patterns to detect shadcn/ui component imports.
+ * The first capture group must be the component name (e.g. "button").
+ */
 const SHADCN_UI_PATTERNS: RegExp[] = [
   /^@\/components\/ui\/(.+)$/,
   /^~\/components\/ui\/(.+)$/,
   /^components\/ui\/(.+)$/,
+];
+
+/**
+ * Files matching any of these patterns are excluded from the registry.
+ * This prevents story, test, and spec files from being picked up
+ * despite having a .tsx / .ts extension.
+ */
+const EXCLUDED_PATTERNS: RegExp[] = [
+  /\.stories\.[tj]sx?$/,
+  /\.test\.[tj]sx?$/,
+  /\.spec\.[tj]sx?$/,
 ];
 
 // ---------------------------------------------------------------------------
@@ -122,30 +143,21 @@ interface PackageJson {
 // ---------------------------------------------------------------------------
 
 interface CliOptions {
-  /** When true, skip items already present in registry.json */
   noOverride: boolean;
-  /**
-   * Resolved set of "category/entity" pairs to process.
-   * Empty means process everything.
-   */
   targets: Set<string>;
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const args = argv.slice(2); // strip node + script path
+  const args = argv.slice(2);
   const noOverride = args.includes("--no-override");
   const positional = args.filter((a) => !a.startsWith("--"));
 
-  // Resolve each target to one or more "category/entity" keys.
-  // If the user passes "button" we search all categories for a match.
   const targets = new Set<string>();
 
   for (const target of positional) {
     if (target.includes("/")) {
-      // Already qualified: "components/button"
       targets.add(target);
     } else {
-      // Unqualified: "button" — resolve against all categories present on disk
       let found = false;
       for (const category of Object.keys(ENTITY_CATEGORIES)) {
         const entityDir = path.join(REGISTRY_DIR, category, target);
@@ -284,7 +296,9 @@ function walkDir(dir: string): string[] {
 const SOURCE_EXTENSIONS = new Set([".tsx", ".ts", ".js", ".jsx"]);
 
 function isSourceFile(filePath: string): boolean {
-  return SOURCE_EXTENSIONS.has(path.extname(filePath)) || filePath.endsWith(".css");
+  const ext = path.extname(filePath);
+  if (!SOURCE_EXTENSIONS.has(ext) && !filePath.endsWith(".css")) return false;
+  return !EXCLUDED_PATTERNS.some((pattern) => pattern.test(filePath));
 }
 
 function inferFileType(filePath: string, categoryDefault: RegistryFileType): RegistryFileType {
@@ -375,7 +389,6 @@ function main() {
   const packageMap = buildPackageMap(pkg);
   console.log(`📦  Loaded ${packageMap.size} packages from package.json`);
 
-  // Load existing registry so we can merge into it
   const existingRegistry = loadExistingRegistry();
   const existingItemMap = new Map<string, RegistryItem>(
     (existingRegistry?.items ?? []).map((item) => [item.name, item])
@@ -392,7 +405,6 @@ function main() {
   }
   console.log();
 
-  // Determine which categories are active (configured + present on disk)
   const presentDirs = new Set(
     fs.readdirSync(REGISTRY_DIR, { withFileTypes: true })
       .filter((e) => e.isDirectory())
@@ -405,10 +417,7 @@ function main() {
     process.exit(0);
   }
 
-  // Collect updated items, tracking results for the summary
-  const summary = { added: 0, updated: 0, skipped: 0, unchanged: 0 };
-
-  // Start from existing items so unprocessed ones are preserved
+  const summary = { added: 0, updated: 0, skipped: 0 };
   const updatedItemMap = new Map<string, RegistryItem>(existingItemMap);
 
   for (const categoryName of activeCategories) {
@@ -420,7 +429,6 @@ function main() {
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
       .filter((entityName) => {
-        // If targets were specified, only process matching ones
         if (options.targets.size === 0) return true;
         return (
           options.targets.has(`${categoryName}/${entityName}`) ||
@@ -435,7 +443,6 @@ function main() {
     for (const entityName of entityNames) {
       const alreadyExists = existingItemMap.has(entityName);
 
-      // Skip if --no-override and item exists
       if (options.noOverride && alreadyExists) {
         console.log(`  –  ${entityName}  (skipped, already exists)`);
         summary.skipped++;
@@ -473,10 +480,9 @@ function main() {
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(registry, null, 2), "utf-8");
 
   console.log("\n✅  registry.json updated:");
-  if (summary.added)     console.log(`   ${summary.added} added`);
-  if (summary.updated)   console.log(`   ${summary.updated} updated`);
-  if (summary.skipped)   console.log(`   ${summary.skipped} skipped (--no-override)`);
-  if (summary.unchanged) console.log(`   ${summary.unchanged} unchanged`);
+  if (summary.added)   console.log(`   ${summary.added} added`);
+  if (summary.updated) console.log(`   ${summary.updated} updated`);
+  if (summary.skipped) console.log(`   ${summary.skipped} skipped (--no-override)`);
   console.log(`   ${updatedItemMap.size} total item(s) in registry`);
 }
 
