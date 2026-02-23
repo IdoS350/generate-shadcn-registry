@@ -307,6 +307,31 @@ function extractShadcnComponent(importPath: string): string | null {
 }
 
 /**
+ * If `importPath` is a relative import (e.g. `../../hooks/use-debounce`) from
+ * `filePath` that resolves to a known registry entity, returns its item name;
+ * otherwise null.
+ */
+function resolveRelativeRegistryDep(
+  filePath: string,
+  importPath: string,
+  registryEntityMap: Map<string, string>,
+): string | null {
+  const resolved = path.resolve(path.dirname(filePath), importPath)
+  const rel = path.relative(REGISTRY_DIR, resolved)
+  // If the resolved path escapes the registry dir it's not a registry dep
+  if (rel.startsWith('..')) return null
+  // Exact match: "hooks/use-debounce"
+  if (registryEntityMap.has(rel)) return registryEntityMap.get(rel)!
+  // Deeper path: "hooks/use-debounce/use-debounce.ts" → take first two segments
+  const parts = rel.split('/')
+  if (parts.length >= 2) {
+    const key = `${parts[0]}/${parts[1]}`
+    if (registryEntityMap.has(key)) return registryEntityMap.get(key)!
+  }
+  return null
+}
+
+/**
  * If `importPath` is an alias import (e.g. `@/hooks/use-debounce`) that
  * resolves to a known registry entity, returns its item name; otherwise null.
  */
@@ -377,6 +402,7 @@ interface FileDeps {
 }
 
 function analyzeFile(
+  filePath: string,
   source: string,
   packageMap: Map<string, string>,
   registryEntityMap: Map<string, string>,
@@ -394,6 +420,14 @@ function analyzeFile(
     // Check alias imports for intra-registry dependencies before skipping them
     if (!importPath.startsWith('.')) {
       const registryDep = resolveRegistryDep(importPath, registryEntityMap)
+      if (registryDep) {
+        registry.add(registryDep)
+        continue
+      }
+    }
+    // Check relative imports for intra-registry dependencies
+    if (importPath.startsWith('.')) {
+      const registryDep = resolveRelativeRegistryDep(filePath, importPath, registryEntityMap)
       if (registryDep) {
         registry.add(registryDep)
         continue
@@ -482,7 +516,7 @@ function processEntity(
     const content = fs.readFileSync(absPath, 'utf-8')
 
     if (!absPath.endsWith('.css')) {
-      const { npm, registry, unresolved } = analyzeFile(content, packageMap, registryEntityMap)
+      const { npm, registry, unresolved } = analyzeFile(absPath, content, packageMap, registryEntityMap)
       npm.forEach((d) => allNpm.add(d))
       registry.forEach((d) => allRegistry.add(d))
       unresolved.forEach((d) => allUnresolved.add(d))
